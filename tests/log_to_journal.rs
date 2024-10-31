@@ -53,6 +53,7 @@ fn simple_log_entry() {
             .to_str()
             .unwrap()
     );
+    assert!(entry.contains_key("THREAD_ID"));
 
     assert_eq!(entry["SYSLOG_PID"], std::process::id().to_string());
     // // The PID we logged is equal to the PID systemd determined as source for our process

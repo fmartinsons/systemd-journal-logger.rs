@@ -126,6 +126,7 @@ impl<'a, 'kvs> VisitSource<'kvs> for WriteKeyValues<'a> {
 ///
 /// - `TARGET`: The target of the log record (see [`log::Record::target()`]).
 /// - `CODE_MODULE`: The module path of the log record (see [`log::Record::module_path()`], only if present).
+/// - `THREAD_ID`: The current thread id in debug format [`std::thread::ThreadId`]).
 ///
 /// [journal fields]: https://www.freedesktop.org/software/systemd/man/systemd.journal-fields.html
 ///
@@ -205,6 +206,11 @@ fn record_payload(syslog_identifier: &str, record: &Record) -> Vec<u8> {
             syslog_identifier.as_bytes(),
         );
     }
+    put_field_bytes(
+        &mut buffer,
+        WellFormed("THREAD_ID"),
+        format!("{:?}", std::thread::current().id()).as_bytes(),
+    );
     if let Some(file) = record.file() {
         put_field_bytes(&mut buffer, WellFormed("CODE_FILE"), file.as_bytes());
     }
