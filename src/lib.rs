@@ -106,6 +106,16 @@ impl<'a, 'kvs> VisitSource<'kvs> for WriteKeyValues<'a> {
     }
 }
 
+/// A trait to define a method to retrieve a set of custom fields
+/// (name, value) to be inserted inside each journal record
+pub trait CustomFieldsProvider {
+    /// Retrieve an iterator over name and value. This will be called during build of journal
+    /// record before sending to systemd-journald.
+    /// See [`JournalLog::add_extra_field`] for details about name and value
+    fn get(&self) -> Box<dyn Iterator<Item = (String, Vec<u8>)>>;
+}
+type OptCustomFieldsProvider = Option<Box<dyn CustomFieldsProvider + Send + Sync>>;
+
 /// A systemd journal logger.
 ///
 /// ## Journal access
@@ -146,6 +156,8 @@ impl<'a, 'kvs> VisitSource<'kvs> for WriteKeyValues<'a> {
 /// In addition to these fields the logger also adds all structures key-values
 /// (see [`log::Record::key_values`]) from each log record as journal fields,
 /// and also supports global extra fields via [`Self::with_extra_fields`].
+/// You also have the possibilities to insert dynamically custom fields in each
+/// journal record via [`Self::with_custom_fields_provider`].
 ///
 /// Journald allows only ASCII uppercase letters, ASCII digits, and the
 /// underscore in field names, and limits field names to 64 bytes.  See upstream's
@@ -179,9 +191,15 @@ pub struct JournalLog {
     extra_fields: Vec<u8>,
     /// The syslog identifier.
     syslog_identifier: String,
+    /// An optional provider for custom fields
+    custom_fields_provider: OptCustomFieldsProvider,
 }
 
-fn record_payload(syslog_identifier: &str, record: &Record) -> Vec<u8> {
+fn record_payload(
+    syslog_identifier: &str,
+    record: &Record,
+    custom_fields_provider: &OptCustomFieldsProvider,
+) -> Vec<u8> {
     use FieldName::*;
     let mut buffer = Vec::with_capacity(1024);
     // Write standard fields. Numeric fields can't contain new lines so we
@@ -219,6 +237,11 @@ fn record_payload(syslog_identifier: &str, record: &Record) -> Vec<u8> {
         WellFormed("TARGET"),
         record.target().as_bytes(),
     );
+    if let Some(custom_fields_provider) = custom_fields_provider {
+        for (name, value) in custom_fields_provider.get() {
+            put_field_bytes(&mut buffer, WriteEscaped(&name), &value);
+        }
+    }
     // Put all structured values of the record
     record
         .key_values()
@@ -244,6 +267,7 @@ impl JournalLog {
             client: JournalClient::new()?,
             extra_fields: Vec::new(),
             syslog_identifier: String::new(),
+            custom_fields_provider: None,
         })
     }
 
@@ -306,6 +330,16 @@ impl JournalLog {
         logger
     }
 
+    /// Set a provider for custom fields insertion in each journal record
+    /// See [`CustomFieldsProvider`]
+    pub fn with_custom_fields_provider<C>(mut self, custom_field_provider: C) -> Self
+    where
+        C: CustomFieldsProvider + 'static + Send + Sync,
+    {
+        self.custom_fields_provider = Some(Box::new(custom_field_provider));
+        self
+    }
+
     /// Set the given syslog identifier for this logger.
     ///
     /// The logger writes this string in the `SYSLOG_IDENTIFIER` field, which
@@ -321,7 +355,11 @@ impl JournalLog {
     /// Get the complete journal payload for `record`, including extra fields
     /// from this logger.
     fn record_payload(&self, record: &Record) -> Vec<u8> {
-        let mut payload = record_payload(&self.syslog_identifier, record);
+        let mut payload = record_payload(
+            &self.syslog_identifier,
+            record,
+            &self.custom_fields_provider,
+        );
         payload.extend_from_slice(&self.extra_fields);
         payload
     }
